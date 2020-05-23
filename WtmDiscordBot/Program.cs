@@ -12,8 +12,9 @@ namespace WtmDiscordBot
             var esiSecretKey = ConfigurationManager.AppSettings["esiSecretKey"].ToString();
             var approvedDiscordUsers = ConfigurationManager.AppSettings["approvedDiscordUsers"].ToString();
             var mailingListName = ConfigurationManager.AppSettings["mailingListName"].ToString();
+            var channelToWatch = ConfigurationManager.AppSettings["channelToWatch"].ToString();
 
-            var discordBot = new DiscordBot(discordToken, esiClientId, esiSecretKey, approvedDiscordUsers, mailingListName);
+            var discordBot = new DiscordBot(discordToken, esiClientId, esiSecretKey, approvedDiscordUsers, mailingListName, channelToWatch);
             await discordBot.Start();
 
             await Task.Delay(-1);

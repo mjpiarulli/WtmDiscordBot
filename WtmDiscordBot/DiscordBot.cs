@@ -20,8 +20,10 @@ namespace WtmDiscordBot
         private readonly string _discordAuthToken;
         private readonly string _approvedDiscordUsers;
         private readonly string _mailingListName;
+        private readonly string _channelToWatch;
+
         private readonly EsiClient _esiClient;
-        
+
 
         private DiscordSocketClient _discordClient;
         private string _refreshToken;
@@ -29,11 +31,13 @@ namespace WtmDiscordBot
         private long _mailingListId;
 
 
-        public DiscordBot(string discordAuthToken, string esiClientId, string esiSecretKey, string approvedDiscordUsers, string mailingListName)
+        public DiscordBot(string discordAuthToken, string esiClientId, string esiSecretKey, string approvedDiscordUsers, string mailingListName, string channelToWatch)
         {
             _discordAuthToken = discordAuthToken;
             _approvedDiscordUsers = approvedDiscordUsers;
             _mailingListName = mailingListName;
+            _channelToWatch = channelToWatch;
+
             IOptions<EsiConfig> config = Options.Create(new EsiConfig()
             {
                 EsiUrl = "https://esi.evetech.net/",
@@ -50,7 +54,7 @@ namespace WtmDiscordBot
         public async Task Start()
         {
             // set up esi connection
-            var scopes = new List<string>{"esi-mail.send_mail.v1", "esi-search.search_structures.v1", "esi-mail.read_mail.v1", "esi-mail.organize_mail.v1"};
+            var scopes = new List<string> { "esi-mail.send_mail.v1", "esi-search.search_structures.v1", "esi-mail.read_mail.v1", "esi-mail.organize_mail.v1" };
             var url = _esiClient.SSO.CreateAuthenticationUrl(scopes);
             System.Diagnostics.Process.Start(url);
             var esiAuthToken = GetEsiAuthToken();
@@ -58,20 +62,36 @@ namespace WtmDiscordBot
             var authChar = await _esiClient.SSO.Verify(token);
             _refreshToken = authChar.RefreshToken;
             _esiTokenExpires = authChar.ExpiresOn;
-            _esiClient.SetCharacterData(authChar);  
+            _esiClient.SetCharacterData(authChar);
 
             // get the mailing list id
             var response = await _esiClient.Mail.MailingLists();
             _mailingListId = response.Data.Where(ml => ml.Name.ToLower() == _mailingListName.ToLower()).First().MailingListId;
 
             // set up the discord bot
-            _discordClient = new DiscordSocketClient();                        
+            _discordClient = new DiscordSocketClient();
             _discordClient.ReactionAdded += ReactionAdded;
+            _discordClient.MessageReceived += MessageReceived;
 
             await _discordClient.LoginAsync(TokenType.Bot, _discordAuthToken);
             await _discordClient.StartAsync();
 
             await Task.Delay(-1);
+        }
+
+        public async Task MessageReceived(SocketMessage message)
+        {
+            // check if the esi token needs to be refreshed and refresh it
+            await RefreshEsiToken();
+
+            if (message.Channel.Name.Equals(_channelToWatch, StringComparison.OrdinalIgnoreCase))
+            {
+                var body = message.Embeds.FirstOrDefault().Footer.ToString();
+                var subject = Regex.Match(body, @"<url.*>Kill: (.*)</url>").Groups[1].Value;
+                var recipients = new[] { new { recipient_id = _mailingListId, recipient_type = "mailing_list" } };
+
+                var response = await _esiClient.Mail.New(recipients, subject, body);
+            }
         }
 
         /// <summary>
@@ -88,19 +108,19 @@ namespace WtmDiscordBot
 
             // check to make sure the user who placed the reaction on the message is an approved user and
             // that the reaction is one we care about
-            if(_approvedDiscordUsers.IndexOf(reaction.User.ToString()) > 0 &&
+            if (_approvedDiscordUsers.Contains(reaction.User.ToString()) &&
                 reaction.Emote.Name == "sendmail")
             {
                 var discordMessage = await channel.GetMessageAsync(message.Id);
                 var body = discordMessage.Embeds.FirstOrDefault().Footer.ToString();
                 var subject = Regex.Match(body, @"<url.*>Kill: (.*)</url>").Groups[1].Value;
-                var recipients = new[] {new{ recipient_id = _mailingListId, recipient_type = "mailing_list"}};
+                var recipients = new[] { new { recipient_id = _mailingListId, recipient_type = "mailing_list" } };
 
                 var response = await _esiClient.Mail.New(recipients, subject, body);
-            }                
+            }
         }
 
-        
+
         /// <summary>
         /// the token esi provides is only good for a certain amount of time so here we check
         /// to see if the token has expired and if it has refresh it
@@ -110,7 +130,7 @@ namespace WtmDiscordBot
         {
             if (DateTime.Now < _esiTokenExpires)
                 return;
-            
+
             var token = await _esiClient.SSO.GetToken(GrantType.RefreshToken, _refreshToken);
             var authChar = await _esiClient.SSO.Verify(token);
             _refreshToken = authChar.RefreshToken;
@@ -127,8 +147,8 @@ namespace WtmDiscordBot
             var serverSocket = new TcpListener(ipAddress, 12847);
             int requestCount = 0;
             var clientSocket = default(TcpClient);
-            serverSocket.Start();            
-            clientSocket = serverSocket.AcceptTcpClient();            
+            serverSocket.Start();
+            clientSocket = serverSocket.AcceptTcpClient();
             requestCount = 0;
             var code = string.Empty;
 
@@ -158,7 +178,7 @@ namespace WtmDiscordBot
                     byte[] sendBytes = Encoding.ASCII.GetBytes(serverResponse);
                     networkStream.Write(sendBytes, 0, sendBytes.Length);
                     networkStream.Flush();
-                    break;                    
+                    break;
                 }
                 catch (Exception ex)
                 {
