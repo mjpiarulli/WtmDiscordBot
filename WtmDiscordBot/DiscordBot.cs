@@ -24,7 +24,6 @@ namespace WtmDiscordBot
 
         private readonly EsiClient _esiClient;
 
-
         private DiscordSocketClient _discordClient;
         private string _refreshToken;
         private DateTime _esiTokenExpires;
@@ -66,7 +65,11 @@ namespace WtmDiscordBot
 
             // get the mailing list id
             var response = await _esiClient.Mail.MailingLists();
-            _mailingListId = response.Data.Where(ml => ml.Name.ToLower() == _mailingListName.ToLower()).First().MailingListId;
+            var mailingList = response.Data.Where(ml => ml.Name.ToLower() == _mailingListName.ToLower()).FirstOrDefault();
+            if (mailingList == null)
+                Log("The character  used does not have access to the mailing list specified in the config. Please look at mailingListName app setting.");
+
+            _mailingListId = mailingList.MailingListId;
 
             // set up the discord bot
             _discordClient = new DiscordSocketClient();
@@ -79,19 +82,24 @@ namespace WtmDiscordBot
             await Task.Delay(-1);
         }
 
+        public void Log(string message)
+        {
+            Console.WriteLine($"{DateTime.Now:MM/dd/yyyy HH:mm:ss}: {message}");
+        }
+
+
         public async Task MessageReceived(SocketMessage message)
         {
             // check if the esi token needs to be refreshed and refresh it
             await RefreshEsiToken();
 
-            if (message.Channel.Name.Equals(_channelToWatch, StringComparison.OrdinalIgnoreCase))
+            if (!message.Channel.Name.Equals(_channelToWatch, StringComparison.OrdinalIgnoreCase))
             {
-                var body = message.Embeds.FirstOrDefault().Footer.ToString();
-                var subject = Regex.Match(body, @"<url.*>Kill: (.*)</url>").Groups[1].Value;
-                var recipients = new[] { new { recipient_id = _mailingListId, recipient_type = "mailing_list" } };
-
-                var response = await _esiClient.Mail.New(recipients, subject, body);
+                Log("Message received in channel bot is not watching.  Ignoring message");
+                return;
             }
+
+            await BuildAndSendMessage(message);
         }
 
         /// <summary>
@@ -106,18 +114,62 @@ namespace WtmDiscordBot
             // check if the esi token needs to be refreshed and refresh it
             await RefreshEsiToken();
 
+            if (!channel.Name.Equals(_channelToWatch, StringComparison.OrdinalIgnoreCase))
+            {
+                Log("Reaction received in channel bot is not watching.  Ignoring message");
+                return;
+            }
+
             // check to make sure the user who placed the reaction on the message is an approved user and
             // that the reaction is one we care about
-            if (_approvedDiscordUsers.Contains(reaction.User.ToString()) &&
-                reaction.Emote.Name == "sendmail")
+            if (!_approvedDiscordUsers.Contains(reaction.User.ToString()))
             {
-                var discordMessage = await channel.GetMessageAsync(message.Id);
-                var body = discordMessage.Embeds.FirstOrDefault().Footer.ToString();
-                var subject = Regex.Match(body, @"<url.*>Kill: (.*)</url>").Groups[1].Value;
-                var recipients = new[] { new { recipient_id = _mailingListId, recipient_type = "mailing_list" } };
-
-                var response = await _esiClient.Mail.New(recipients, subject, body);
+                Log($"Unapproved user added reaction to message: {reaction.User}");
+                return;
             }
+            if (!reaction.Emote.Name.Equals("sendmail", StringComparison.OrdinalIgnoreCase))
+            {
+                Log($"Other emote detected on message: {reaction.Emote.Name}");
+                return;
+            }
+
+            var discordMessage = await channel.GetMessageAsync(message.Id);
+            if (discordMessage == null)
+            {
+                Log($"Unable to find discord message from channel {channel.Name}");
+                return;
+            }
+
+            await BuildAndSendMessage(discordMessage);
+
+        }
+
+        private async Task BuildAndSendMessage(IMessage discordMessage)
+        {
+            var embed = discordMessage.Embeds.FirstOrDefault();
+            if (embed == null)
+            {
+                Log($"Message doesn't have an embed section.  Ignoring");
+                return;
+            }
+
+            var body = embed.Footer.ToString();
+
+            var regExMatch = Regex.Match(body, @"<url.*>Kill: (.*)</url>");
+
+            if (!regExMatch.Success)
+            {
+                Log("Unable to parse subject line out of embed");
+                return;
+            }
+
+            var subject = regExMatch.Groups[1].Value;
+            var recipients = new[] { new { recipient_id = _mailingListId, recipient_type = "mailing_list" } };
+
+            var response = await _esiClient.Mail.New(recipients, subject, body);
+
+            if (response.Exception != null)
+                Log(response.Exception.Message);
         }
 
 
@@ -131,11 +183,21 @@ namespace WtmDiscordBot
             if (DateTime.Now < _esiTokenExpires)
                 return;
 
-            var token = await _esiClient.SSO.GetToken(GrantType.RefreshToken, _refreshToken);
-            var authChar = await _esiClient.SSO.Verify(token);
-            _refreshToken = authChar.RefreshToken;
-            _esiTokenExpires = authChar.ExpiresOn;
-            _esiClient.SetCharacterData(authChar);
+            try
+            {
+                var token = await _esiClient.SSO.GetToken(GrantType.RefreshToken, _refreshToken);
+                var authChar = await _esiClient.SSO.Verify(token);
+                _refreshToken = authChar.RefreshToken;
+                _esiTokenExpires = authChar.ExpiresOn;
+                _esiClient.SetCharacterData(authChar);
+
+                Log("Refreshed ESI token");
+            }
+            catch (Exception e)
+            {
+                Log("Error occured while refreshing ESI token");
+                Log(e.Message);
+            }
         }
 
         /// <summary>
@@ -143,27 +205,29 @@ namespace WtmDiscordBot
         /// </summary>
         private string GetEsiAuthToken()
         {
-            var ipAddress = IPAddress.Parse("127.0.0.1");
-            var serverSocket = new TcpListener(ipAddress, 12847);
-            int requestCount = 0;
-            var clientSocket = default(TcpClient);
-            serverSocket.Start();
-            clientSocket = serverSocket.AcceptTcpClient();
-            requestCount = 0;
-            var code = string.Empty;
-
-            while (true)
+            try
             {
-                try
+                var ipAddress = IPAddress.Parse("127.0.0.1");
+                var serverSocket = new TcpListener(ipAddress, 12847);
+                int requestCount = 0;
+                var clientSocket = default(TcpClient);
+                serverSocket.Start();
+                clientSocket = serverSocket.AcceptTcpClient();
+                requestCount = 0;
+                var code = string.Empty;
+
+                while (true)
                 {
-                    requestCount = requestCount + 1;
-                    NetworkStream networkStream = clientSocket.GetStream();
-                    byte[] bytesFrom = new byte[1002500];
-                    networkStream.Read(bytesFrom, 0, clientSocket.ReceiveBufferSize);
-                    string dataFromClient = Encoding.ASCII.GetString(bytesFrom);
-                    var match = Regex.Match(dataFromClient, @"\/\?code=([a-zA-Z0-9-_]*)");
-                    code = match.Groups[1].Value;
-                    string serverResponse = @"HTTP/1.1 200 OK
+                    try
+                    {
+                        requestCount = requestCount + 1;
+                        NetworkStream networkStream = clientSocket.GetStream();
+                        byte[] bytesFrom = new byte[1002500];
+                        networkStream.Read(bytesFrom, 0, clientSocket.ReceiveBufferSize);
+                        string dataFromClient = Encoding.ASCII.GetString(bytesFrom);
+                        var match = Regex.Match(dataFromClient, @"\/\?code=([a-zA-Z0-9-_]*)");
+                        code = match.Groups[1].Value;
+                        string serverResponse = @"HTTP/1.1 200 OK
                                                 Date: Mon, 27 Jul 2009 12:28:53 GMT
                                                 Server: Apache/2.2.14 (Win32)
                                                 Last-Modified: Wed, 22 Jul 2009 19:15:56 GMT
@@ -175,21 +239,29 @@ namespace WtmDiscordBot
                                                 <h1>Hi! You can close this page now.</h1>
                                                 </body>
                                                 </html>";
-                    byte[] sendBytes = Encoding.ASCII.GetBytes(serverResponse);
-                    networkStream.Write(sendBytes, 0, sendBytes.Length);
-                    networkStream.Flush();
-                    break;
+                        byte[] sendBytes = Encoding.ASCII.GetBytes(serverResponse);
+                        networkStream.Write(sendBytes, 0, sendBytes.Length);
+                        networkStream.Flush();
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log("Error occured with the stream from the browser");
+                        Log(ex.Message);
+                    }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine(ex.ToString());
-                }
+
+                clientSocket.Close();
+                serverSocket.Stop();
+
+                return code;
             }
-
-            clientSocket.Close();
-            serverSocket.Stop();
-
-            return code;
+            catch (Exception e)
+            {
+                Log("Error occured while getting the ESI code from the browser");
+                Log(e.Message);
+                return string.Empty;
+            }
         }
     }
 }

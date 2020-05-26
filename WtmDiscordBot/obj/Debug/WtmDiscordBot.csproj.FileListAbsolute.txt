@@ -141,4 +141,3 @@ E:\Projects\WtmDiscordBot\WtmDiscordBot\bin\Debug\Microsoft.Bcl.AsyncInterfaces.
 E:\Projects\WtmDiscordBot\WtmDiscordBot\bin\Debug\System.Interactive.Async.xml
 E:\Projects\WtmDiscordBot\WtmDiscordBot\bin\Debug\System.Linq.Async.xml
 E:\Projects\WtmDiscordBot\WtmDiscordBot\bin\Debug\System.Threading.Tasks.Extensions.xml
-E:\Projects\WtmDiscordBot\WtmDiscordBot\obj\Debug\WtmDiscordBot.csprojAssemblyReference.cache
